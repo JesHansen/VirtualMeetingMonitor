@@ -2,6 +2,7 @@
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace VirtualMeetingMonitor
 {
@@ -16,10 +17,69 @@ namespace VirtualMeetingMonitor
 
         public event Notify OutsideUDPTafficeReceived;
 
-
-        public void StartListening()
+        public async Task StartListening()
         {
+            GetLocalIpAddress();
+            SetUpListenerSocket();
+            await ListenForTraffic();
+        }
 
+        /// <summary>
+        /// This method lets the socket receive data in a loop. Each time
+        /// new data has arrived, it is passed on to the <see cref="ParseData"/> method.
+        /// When the socket is disposed, the method returns.
+        /// </summary>
+        private async Task ListenForTraffic()
+        {
+            ArraySegment<byte> buffer = new ArraySegment<byte>(byteData);
+            while (true)
+            {
+                try
+                {
+                    int bytesRecieved = await mainSocket.ReceiveAsync(buffer, SocketFlags.None);
+                    ParseData(buffer.Array, bytesRecieved);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+
+                catch (Exception ex)
+                {
+                  Console.WriteLine("Exception while receiving: " + ex.Message);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Configure the socket for receiving data.
+        /// </summary>
+        private void SetUpListenerSocket()
+        {
+          //For sniffing the socket to capture the packets has to be a raw socket, with the
+          //address family being of type internetwork, and protocol being IP
+          mainSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.IP);
+
+          //Bind the socket to the selected IP address
+          mainSocket.Bind(new IPEndPoint(localIp, 0));
+          subnetMask = $"{localIp.GetAddressBytes()[0]}.{localIp.GetAddressBytes()[1]}.{localIp.GetAddressBytes()[2]}.";
+
+          //Set the socket  options
+          mainSocket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.HeaderIncluded, true);
+
+          byte[] True = new byte[] {1, 0, 0, 0};
+          byte[] Out = new byte[] {1, 0, 0, 0}; //Capture outgoing packets
+
+          //Socket.IOControl is analogous to the WSAIoctl method of Winsock 2
+          // The current user must belong to the Administrators group on the local computer
+          mainSocket.IOControl(IOControlCode.ReceiveAll, True, Out);
+        }
+
+        /// <summary>
+        /// Grab the IP address of a local network interface.
+        /// </summary>
+        private void GetLocalIpAddress()
+        {
             IPHostEntry HosyEntry = Dns.GetHostEntry((Dns.GetHostName()));
             if (HosyEntry.AddressList.Any())
             {
@@ -27,59 +87,16 @@ namespace VirtualMeetingMonitor
                 {
                     if (ip.AddressFamily == AddressFamily.InterNetwork)
                     {
-                        localIp = ip;
-                        break;
+                      localIp = ip;
+                      break;
                     }
                 }
             }
-
-            //For sniffing the socket to capture the packets has to be a raw socket, with the
-            //address family being of type internetwork, and protocol being IP
-            mainSocket = new Socket(AddressFamily.InterNetwork, SocketType.Raw, ProtocolType.IP);
-
-            //Bind the socket to the selected IP address
-            mainSocket.Bind(new IPEndPoint(localIp, 0));
-            subnetMask = $"{localIp.GetAddressBytes()[0]}.{localIp.GetAddressBytes()[1]}.{localIp.GetAddressBytes()[2]}.";
-
-            //Set the socket  options
-            mainSocket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.HeaderIncluded, true);
-
-            byte[] True = new byte[] { 1, 0, 0, 0 };
-            byte[] Out = new byte[] { 1, 0, 0, 0 }; //Capture outgoing packets
-
-            //Socket.IOControl is analogous to the WSAIoctl method of Winsock 2
-            // The current user must belong to the Administrators group on the local computer
-            mainSocket.IOControl(IOControlCode.ReceiveAll, True, Out);
-
-            //Start receiving the packets asynchronously
-            mainSocket.BeginReceive(byteData, 0, byteData.Length, SocketFlags.None, OnReceive, null);
         }
 
         public void Stop()
         {
             mainSocket.Close();
-        }
-
-        private void OnReceive(IAsyncResult ar)
-        {
-            try
-            {
-                int nReceived = mainSocket.EndReceive(ar);
-                ParseData(byteData, nReceived);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("OnReceive Exception: " + ex.Message);
-            }
-
-            try
-            {
-                //Another call to BeginReceive so that we continue to receive the incoming packets
-                mainSocket.BeginReceive(byteData, 0, byteData.Length, SocketFlags.None, OnReceive, null);
-            }
-            catch (ObjectDisposedException)
-            {
-            }
         }
 
         private void ParseData(byte[] byteData, int nReceived)
@@ -90,7 +107,6 @@ namespace VirtualMeetingMonitor
                 OutsideUDPTafficeReceived?.Invoke(ipHeader);
             }
         }
-
 
         private bool isOutsideUDPTaffice(IPHeader ipHeader)
         {
@@ -107,7 +123,5 @@ namespace VirtualMeetingMonitor
             }
             return retVal;
         }
-
-
     }
 }
